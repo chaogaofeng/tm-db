@@ -21,17 +21,12 @@ type memDBIterator struct {
 	item   *item
 	start  []byte
 	end    []byte
-	useMtx bool
 }
 
 var _ Iterator = (*memDBIterator)(nil)
 
 // newMemDBIterator creates a new memDBIterator.
 func newMemDBIterator(db *MemDB, start []byte, end []byte, reverse bool) *memDBIterator {
-	return newMemDBIteratorMtxChoice(db, start, end, reverse, true)
-}
-
-func newMemDBIteratorMtxChoice(db *MemDB, start []byte, end []byte, reverse bool, useMtx bool) *memDBIterator {
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan *item, chBufferSize)
 	iter := &memDBIterator{
@@ -39,16 +34,11 @@ func newMemDBIteratorMtxChoice(db *MemDB, start []byte, end []byte, reverse bool
 		cancel: cancel,
 		start:  start,
 		end:    end,
-		useMtx: useMtx,
 	}
 
-	if useMtx {
-		db.mtx.RLock()
-	}
+	db.mtx.RLock()
 	go func() {
-		if useMtx {
-			defer db.mtx.RUnlock()
-		}
+		defer db.mtx.RUnlock()
 		// Because we use [start, end) for reverse ranges, while btree uses (start, end], we need
 		// the following variables to handle some reverse iteration conditions ourselves.
 		var (
@@ -56,7 +46,7 @@ func newMemDBIteratorMtxChoice(db *MemDB, start []byte, end []byte, reverse bool
 			abortLessThan []byte
 		)
 		visitor := func(i btree.Item) bool {
-			item := i.(item)
+			item := i.(*item)
 			if skipEqual != nil && bytes.Equal(item.key, skipEqual) {
 				skipEqual = nil
 				return true
@@ -67,7 +57,7 @@ func newMemDBIteratorMtxChoice(db *MemDB, start []byte, end []byte, reverse bool
 			select {
 			case <-ctx.Done():
 				return false
-			case ch <- &item:
+			case ch <- item:
 				return true
 			}
 		}

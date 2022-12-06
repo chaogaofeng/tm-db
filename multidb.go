@@ -2,6 +2,7 @@ package db
 
 import (
 	"fmt"
+	"github.com/tendermint/tm-db/mstorage"
 	"path/filepath"
 
 	"github.com/syndtr/goleveldb/leveldb"
@@ -12,35 +13,55 @@ import (
 
 func init() {
 	dbCreator := func(name string, dir string, options map[string]interface{}) (DB, error) {
-		return NewGoLevelDB(name, dir)
+		return NewMultiDB(name, dir, options)
 	}
-	registerDBCreator(GoLevelDBBackend, dbCreator, false)
+	registerDBCreator(MultiDBBackend, dbCreator, false)
 }
 
-type GoLevelDB struct {
+type MultiDB struct {
 	db *leveldb.DB
 }
 
-var _ DB = (*GoLevelDB)(nil)
+var _ DB = (*MultiDB)(nil)
 
-func NewGoLevelDB(name string, dir string) (*GoLevelDB, error) {
-	return NewGoLevelDBWithOpts(name, dir, nil)
+func NewMultiDB(name string, dir string, options map[string]interface{}) (*MultiDB, error) {
+	return NewMultiDBWithOpts(name, dir, options, nil)
 }
 
-func NewGoLevelDBWithOpts(name string, dir string, o *opt.Options) (*GoLevelDB, error) {
+func NewMultiDBWithOpts(name string, dir string, options map[string]interface{}, o *opt.Options) (*MultiDB, error) {
 	dbPath := filepath.Join(dir, name+".db")
-	db, err := leveldb.OpenFile(dbPath, o)
+	if options == nil || len(options) == 0 {
+		db, err := leveldb.OpenFile(dbPath, o)
+		if err != nil {
+			return nil, err
+		}
+		return &MultiDB{
+			db: db,
+		}, nil
+	}
+
+	//多盘存储初始化
+	dataPaths := options["dataPaths"].([]string)
+	store, err := mstorage.OpenFile(dbPath, false, dataPaths)
 	if err != nil {
 		return nil, err
 	}
-	database := &GoLevelDB{
-		db: db,
+	db, err := leveldb.Open(store, o)
+	if _, corrupted := err.(*errors.ErrCorrupted); corrupted {
+		//db, err = leveldb.Recover(store, nil)
+		return nil, err
 	}
-	return database, nil
+	// (Re)check for errors and abort if opening of the db failed
+	if err != nil {
+		return nil, err
+	}
+	return &MultiDB{
+		db: db,
+	}, nil
 }
 
 // Get implements DB.
-func (db *GoLevelDB) Get(key []byte) ([]byte, error) {
+func (db *MultiDB) Get(key []byte) ([]byte, error) {
 	if len(key) == 0 {
 		return nil, errKeyEmpty
 	}
@@ -55,7 +76,7 @@ func (db *GoLevelDB) Get(key []byte) ([]byte, error) {
 }
 
 // Has implements DB.
-func (db *GoLevelDB) Has(key []byte) (bool, error) {
+func (db *MultiDB) Has(key []byte) (bool, error) {
 	bytes, err := db.Get(key)
 	if err != nil {
 		return false, err
@@ -64,7 +85,7 @@ func (db *GoLevelDB) Has(key []byte) (bool, error) {
 }
 
 // Set implements DB.
-func (db *GoLevelDB) Set(key []byte, value []byte) error {
+func (db *MultiDB) Set(key []byte, value []byte) error {
 	if len(key) == 0 {
 		return errKeyEmpty
 	}
@@ -78,7 +99,7 @@ func (db *GoLevelDB) Set(key []byte, value []byte) error {
 }
 
 // SetSync implements DB.
-func (db *GoLevelDB) SetSync(key []byte, value []byte) error {
+func (db *MultiDB) SetSync(key []byte, value []byte) error {
 	if len(key) == 0 {
 		return errKeyEmpty
 	}
@@ -92,7 +113,7 @@ func (db *GoLevelDB) SetSync(key []byte, value []byte) error {
 }
 
 // Delete implements DB.
-func (db *GoLevelDB) Delete(key []byte) error {
+func (db *MultiDB) Delete(key []byte) error {
 	if len(key) == 0 {
 		return errKeyEmpty
 	}
@@ -103,7 +124,7 @@ func (db *GoLevelDB) Delete(key []byte) error {
 }
 
 // DeleteSync implements DB.
-func (db *GoLevelDB) DeleteSync(key []byte) error {
+func (db *MultiDB) DeleteSync(key []byte) error {
 	if len(key) == 0 {
 		return errKeyEmpty
 	}
@@ -114,12 +135,12 @@ func (db *GoLevelDB) DeleteSync(key []byte) error {
 	return nil
 }
 
-func (db *GoLevelDB) DB() *leveldb.DB {
+func (db *MultiDB) DB() *leveldb.DB {
 	return db.db
 }
 
 // Close implements DB.
-func (db *GoLevelDB) Close() error {
+func (db *MultiDB) Close() error {
 	if err := db.db.Close(); err != nil {
 		return err
 	}
@@ -127,7 +148,7 @@ func (db *GoLevelDB) Close() error {
 }
 
 // Print implements DB.
-func (db *GoLevelDB) Print() error {
+func (db *MultiDB) Print() error {
 	str, err := db.db.GetProperty("leveldb.stats")
 	if err != nil {
 		return err
@@ -144,7 +165,7 @@ func (db *GoLevelDB) Print() error {
 }
 
 // Stats implements DB.
-func (db *GoLevelDB) Stats() map[string]string {
+func (db *MultiDB) Stats() map[string]string {
 	keys := []string{
 		"leveldb.num-files-at-level{n}",
 		"leveldb.stats",
@@ -167,24 +188,24 @@ func (db *GoLevelDB) Stats() map[string]string {
 }
 
 // NewBatch implements DB.
-func (db *GoLevelDB) NewBatch() Batch {
-	return newGoLevelDBBatch(db)
+func (db *MultiDB) NewBatch() Batch {
+	return newMultiDBBatch(db)
 }
 
 // Iterator implements DB.
-func (db *GoLevelDB) Iterator(start, end []byte) (Iterator, error) {
+func (db *MultiDB) Iterator(start, end []byte) (Iterator, error) {
 	if (start != nil && len(start) == 0) || (end != nil && len(end) == 0) {
 		return nil, errKeyEmpty
 	}
 	itr := db.db.NewIterator(&util.Range{Start: start, Limit: end}, nil)
-	return newGoLevelDBIterator(itr, start, end, false), nil
+	return newMultiDBIterator(itr, start, end, false), nil
 }
 
 // ReverseIterator implements DB.
-func (db *GoLevelDB) ReverseIterator(start, end []byte) (Iterator, error) {
+func (db *MultiDB) ReverseIterator(start, end []byte) (Iterator, error) {
 	if (start != nil && len(start) == 0) || (end != nil && len(end) == 0) {
 		return nil, errKeyEmpty
 	}
 	itr := db.db.NewIterator(&util.Range{Start: start, Limit: end}, nil)
-	return newGoLevelDBIterator(itr, start, end, true), nil
+	return newMultiDBIterator(itr, start, end, true), nil
 }

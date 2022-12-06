@@ -14,7 +14,7 @@ const (
 )
 
 func init() {
-	registerDBCreator(MemDBBackend, func(name, dir string) (DB, error) {
+	registerDBCreator(MemDBBackend, func(name, dir string, options map[string]interface{}) (DB, error) {
 		return NewMemDB(), nil
 	}, false)
 }
@@ -26,20 +26,20 @@ type item struct {
 }
 
 // Less implements btree.Item.
-func (i item) Less(other btree.Item) bool {
+func (i *item) Less(other btree.Item) bool {
 	// this considers nil == []byte{}, but that's ok since we handle nil endpoints
 	// in iterators specially anyway
-	return bytes.Compare(i.key, other.(item).key) == -1
+	return bytes.Compare(i.key, other.(*item).key) == -1
 }
 
 // newKey creates a new key item.
-func newKey(key []byte) item {
-	return item{key: key}
+func newKey(key []byte) *item {
+	return &item{key: key}
 }
 
 // newPair creates a new pair item.
-func newPair(key, value []byte) item {
-	return item{key: key, value: value}
+func newPair(key, value []byte) *item {
+	return &item{key: key, value: value}
 }
 
 // MemDB is an in-memory database backend using a B-tree for storage.
@@ -73,7 +73,7 @@ func (db *MemDB) Get(key []byte) ([]byte, error) {
 
 	i := db.btree.Get(newKey(key))
 	if i != nil {
-		return i.(item).value, nil
+		return i.(*item).value, nil
 	}
 	return nil, nil
 }
@@ -150,7 +150,7 @@ func (db *MemDB) Print() error {
 	defer db.mtx.RUnlock()
 
 	db.btree.Ascend(func(i btree.Item) bool {
-		item := i.(item)
+		item := i.(*item)
 		fmt.Printf("[%X]:\t[%X]\n", item.key, item.value)
 		return true
 	})
@@ -189,20 +189,4 @@ func (db *MemDB) ReverseIterator(start, end []byte) (Iterator, error) {
 		return nil, errKeyEmpty
 	}
 	return newMemDBIterator(db, start, end, true), nil
-}
-
-// IteratorNoMtx makes an iterator with no mutex.
-func (db *MemDB) IteratorNoMtx(start, end []byte) (Iterator, error) {
-	if (start != nil && len(start) == 0) || (end != nil && len(end) == 0) {
-		return nil, errKeyEmpty
-	}
-	return newMemDBIteratorMtxChoice(db, start, end, false, false), nil
-}
-
-// ReverseIteratorNoMtx makes an iterator with no mutex.
-func (db *MemDB) ReverseIteratorNoMtx(start, end []byte) (Iterator, error) {
-	if (start != nil && len(start) == 0) || (end != nil && len(end) == 0) {
-		return nil, errKeyEmpty
-	}
-	return newMemDBIteratorMtxChoice(db, start, end, true, false), nil
 }

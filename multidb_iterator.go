@@ -1,46 +1,44 @@
-// +build cleveldb
-
 package db
 
 import (
 	"bytes"
 
-	"github.com/jmhodges/levigo"
+	"github.com/syndtr/goleveldb/leveldb/iterator"
 )
 
-// cLevelDBIterator is a cLevelDB iterator.
-type cLevelDBIterator struct {
-	source     *levigo.Iterator
-	start, end []byte
-	isReverse  bool
-	isInvalid  bool
+type multiDBIterator struct {
+	source    iterator.Iterator
+	start     []byte
+	end       []byte
+	isReverse bool
+	isInvalid bool
 }
 
-var _ Iterator = (*cLevelDBIterator)(nil)
+var _ Iterator = (*multiDBIterator)(nil)
 
-func newCLevelDBIterator(source *levigo.Iterator, start, end []byte, isReverse bool) *cLevelDBIterator {
+func newMultiDBIterator(source iterator.Iterator, start, end []byte, isReverse bool) *multiDBIterator {
 	if isReverse {
-		if end == nil || len(end) == 0 {
-			source.SeekToLast()
+		if end == nil {
+			source.Last()
 		} else {
-			source.Seek(end)
-			if source.Valid() {
+			valid := source.Seek(end)
+			if valid {
 				eoakey := source.Key() // end or after key
 				if bytes.Compare(end, eoakey) <= 0 {
 					source.Prev()
 				}
 			} else {
-				source.SeekToLast()
+				source.Last()
 			}
 		}
 	} else {
-		if start == nil || len(start) == 0 {
-			source.SeekToFirst()
+		if start == nil {
+			source.First()
 		} else {
 			source.Seek(start)
 		}
 	}
-	return &cLevelDBIterator{
+	return &multiDBIterator{
 		source:    source,
 		start:     start,
 		end:       end,
@@ -50,12 +48,12 @@ func newCLevelDBIterator(source *levigo.Iterator, start, end []byte, isReverse b
 }
 
 // Domain implements Iterator.
-func (itr cLevelDBIterator) Domain() ([]byte, []byte) {
+func (itr *multiDBIterator) Domain() ([]byte, []byte) {
 	return itr.start, itr.end
 }
 
 // Valid implements Iterator.
-func (itr cLevelDBIterator) Valid() bool {
+func (itr *multiDBIterator) Valid() bool {
 
 	// Once invalid, forever invalid.
 	if itr.isInvalid {
@@ -63,7 +61,7 @@ func (itr cLevelDBIterator) Valid() bool {
 	}
 
 	// If source errors, invalid.
-	if itr.source.GetError() != nil {
+	if err := itr.Error(); err != nil {
 		itr.isInvalid = true
 		return false
 	}
@@ -78,6 +76,7 @@ func (itr cLevelDBIterator) Valid() bool {
 	var start = itr.start
 	var end = itr.end
 	var key = itr.source.Key()
+
 	if itr.isReverse {
 		if start != nil && bytes.Compare(key, start) < 0 {
 			itr.isInvalid = true
@@ -90,24 +89,26 @@ func (itr cLevelDBIterator) Valid() bool {
 		}
 	}
 
-	// It's valid.
+	// Valid
 	return true
 }
 
 // Key implements Iterator.
-func (itr cLevelDBIterator) Key() []byte {
+func (itr *multiDBIterator) Key() []byte {
+	// Key returns a copy of the current key.
 	itr.assertIsValid()
-	return itr.source.Key()
+	return cp(itr.source.Key())
 }
 
 // Value implements Iterator.
-func (itr cLevelDBIterator) Value() []byte {
+func (itr *multiDBIterator) Value() []byte {
+	// Value returns a copy of the current value.
 	itr.assertIsValid()
-	return itr.source.Value()
+	return cp(itr.source.Value())
 }
 
 // Next implements Iterator.
-func (itr cLevelDBIterator) Next() {
+func (itr *multiDBIterator) Next() {
 	itr.assertIsValid()
 	if itr.isReverse {
 		itr.source.Prev()
@@ -117,17 +118,17 @@ func (itr cLevelDBIterator) Next() {
 }
 
 // Error implements Iterator.
-func (itr cLevelDBIterator) Error() error {
-	return itr.source.GetError()
+func (itr *multiDBIterator) Error() error {
+	return itr.source.Error()
 }
 
 // Close implements Iterator.
-func (itr cLevelDBIterator) Close() error {
-	itr.source.Close()
+func (itr *multiDBIterator) Close() error {
+	itr.source.Release()
 	return nil
 }
 
-func (itr cLevelDBIterator) assertIsValid() {
+func (itr multiDBIterator) assertIsValid() {
 	if !itr.Valid() {
 		panic("iterator is invalid")
 	}

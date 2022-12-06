@@ -35,9 +35,12 @@ const (
 	RocksDBBackend BackendType = "rocksdb"
 
 	BadgerDBBackend BackendType = "badgerdb"
+
+	//多盘存储
+	MultiDBBackend BackendType = "multidb"
 )
 
-type dbCreator func(name string, dir string) (DB, error)
+type dbCreator func(name string, dir string, options map[string]interface{}) (DB, error)
 
 var backends = map[BackendType]dbCreator{}
 
@@ -50,7 +53,7 @@ func registerDBCreator(backend BackendType, creator dbCreator, force bool) {
 }
 
 // NewDB creates a new database of type backend with the given name.
-func NewDB(name string, backend BackendType, dir string) (DB, error) {
+func NewDB(name string, backend BackendType, dir string, options map[string]interface{}) (DB, error) {
 	dbCreator, ok := backends[backend]
 	if !ok {
 		keys := make([]string, 0, len(backends))
@@ -60,8 +63,7 @@ func NewDB(name string, backend BackendType, dir string) (DB, error) {
 		return nil, fmt.Errorf("unknown db_backend %s, expected one of %v",
 			backend, strings.Join(keys, ","))
 	}
-
-	db, err := dbCreator(name, dir)
+	db, err := dbCreator(name, dir, options)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize database: %w", err)
 	}
